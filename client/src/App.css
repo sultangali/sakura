@@ -508,6 +508,16 @@
   line-height: 1.6;
 }
 
+/* Ограничиваем размер формул/картинок внутри текста вопроса */
+.question-text img {
+  max-width: 120px;
+  max-height: 80px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: inline-block;
+}
+
 /* Скрытый инпут для поиска */
 .question-search-input {
   
@@ -571,6 +581,16 @@
   cursor: pointer;
   transition: all 0.2s;
   border-bottom: 1.4px solid #e5e7eb;
+}
+
+/* Ограничиваем размер формул/картинок в вариантах ответов */
+.answer-option img {
+  max-width: 120px;
+  max-height: 80px;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  display: inline-block;
 }
 
 /* Чередующиеся цвета: темный, светлый, темный, светлый, темный */

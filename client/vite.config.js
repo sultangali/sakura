@@ -5,21 +5,32 @@ import tailwindcss from '@tailwindcss/vite'
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   // Загружаем переменные окружения
+  // loadEnv загружает .env.local автоматически для development режима
   const env = loadEnv(mode, process.cwd(), '')
   
   // IP облачного сервера
   const SERVER_IP = env.VITE_SERVER_IP || '34.88.233.59'
   const LOCAL_PORT = env.VITE_LOCAL_PORT || '5000'
   
-  // Определяем цель проксирования
-  // В режиме FORCE_CLOUD проксируем на облачный сервер
-  // Иначе на локальный
-  const forceCloud = env.VITE_FORCE_CLOUD === 'true'
-  const proxyTarget = forceCloud 
+  // Режим сервера: 'cloud' или 'local'
+  // VITE_SERVER_MODE=cloud - проксировать на облачный сервер
+  // VITE_SERVER_MODE=local - проксировать на локальный сервер
+  const SERVER_MODE = env.VITE_SERVER_MODE || 'local'
+  const useCloudServer = SERVER_MODE === 'cloud'
+  
+  const proxyTarget = useCloudServer 
     ? `http://${SERVER_IP}` 
     : `http://localhost:${LOCAL_PORT}`
   
-  console.log(`\n🔄 Vite Proxy Target: ${proxyTarget}\n`)
+  // Отладочная информация
+  console.log('\n═══════════════════════════════════════')
+  console.log('📋 Vite Configuration:')
+  console.log(`   Mode: ${mode}`)
+  console.log(`   SERVER_MODE: ${SERVER_MODE}`)
+  console.log(`   VITE_SERVER_IP: ${env.VITE_SERVER_IP || 'не задан (используется по умолчанию)'}`)
+  console.log(`   Use Cloud Server: ${useCloudServer}`)
+  console.log(`🔄 Vite Proxy Target: ${proxyTarget}`)
+  console.log('═══════════════════════════════════════\n')
   
   return {
     plugins: [react(), tailwindcss()],

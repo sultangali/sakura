@@ -6,17 +6,49 @@ const multer = require('multer');
 const mammoth = require('mammoth');
 const path = require('path');
 const fs = require('fs');
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const execAsync = promisify(exec);
 
-// Опциональная загрузка mathjax-node (если установлен)
-let mjAPI = null;
-let mathjaxAvailable = false;
+// Загрузка sharp для обработки изображений
+let sharp = null;
+let sharpAvailable = false;
 try {
-  mjAPI = require('mathjax-node');
-  mathjaxAvailable = true;
+  sharp = require('sharp');
+  sharpAvailable = true;
+  console.log('✓ Sharp загружен для обработки изображений');
 } catch (error) {
-  console.warn('mathjax-node не установлен. Формулы будут сохраняться как текст.');
-  console.warn('Для конвертации формул в изображения установите: npm install mathjax-node');
+  console.warn('⚠ Sharp не установлен. Изображения не будут оптимизированы.');
+  console.warn('  Для установки: npm install sharp');
 }
+
+// Загрузка Jimp для создания placeholder изображений
+let Jimp = null;
+let jimpAvailable = false;
+try {
+  Jimp = require('jimp');
+  jimpAvailable = true;
+  console.log('✓ Jimp загружен для обработки изображений');
+} catch (error) {
+  console.warn('⚠ Jimp не установлен.');
+  console.warn('  Для установки: npm install jimp');
+}
+
+// Загрузка Puppeteer для качественного рендеринга формул
+let puppeteer = null;
+let puppeteerAvailable = false;
+try {
+  puppeteer = require('puppeteer');
+  puppeteerAvailable = true;
+  console.log('✓ Puppeteer загружен для рендеринга формул');
+} catch (error) {
+  console.warn('⚠ Puppeteer не установлен. Формулы будут отображаться как текст.');
+  console.warn('  Для установки: npm install puppeteer');
+}
+
+// MathJax отключен - используем Puppeteer для формул
+const mathjaxAvailable = false;
+const mjAPI = null;
 
 const app = express();
 
@@ -140,18 +172,47 @@ function hasComplexFormula(text) {
   return hasPattern;
 }
 
-// Конвертация формулы в изображение
+// Конвертация формулы в PNG изображение с помощью Puppeteer и MathJax
+let browserInstance = null;
+
+async function getBrowser() {
+  if (!puppeteerAvailable || !puppeteer) {
+    return null;
+  }
+  
+  if (!browserInstance) {
+    try {
+      browserInstance = await puppeteer.launch({
+        headless: true,
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      });
+      console.log('✓ Puppeteer браузер запущен');
+    } catch (error) {
+      console.error('✗ Ошибка запуска Puppeteer:', error.message);
+      return null;
+    }
+  }
+  
+  return browserInstance;
+}
+
 async function convertFormulaToImage(formulaText) {
-  if (!mathjaxAvailable) {
+  if (!puppeteerAvailable || !puppeteer) {
     return null;
   }
   
   try {
-    // Очистка формулы от лишних символов
+    const browser = await getBrowser();
+    if (!browser) {
+      return null;
+    }
+    
+    const page = await browser.newPage();
+    
+    // Подготовка формулы для MathJax
     let cleanFormula = formulaText.trim();
     
-    // Подготовка формулы для MathJax - конвертация в LaTeX формат
-    // Заменяем математические символы на LaTeX команды
+    // Заменяем математические символы на LaTeX
     cleanFormula = cleanFormula
       .replace(/∫/g, '\\int')
       .replace(/∞/g, '\\infty')
@@ -169,71 +230,333 @@ async function convertFormulaToImage(formulaText) {
       .replace(/∇/g, '\\nabla')
       .replace(/∆/g, '\\Delta');
     
-    // Обработка интегралов с пределами: ∫ от -∞ до ∞ (казахский: "до")
-    // Паттерны: "∫ от -∞ до ∞", "∫ -∞ до ∞", "∫ от -∞ до X"
+    // Обработка интегралов
     cleanFormula = cleanFormula.replace(/∫\s*(от\s*)?[₋-]?∞\s*до\s*[₋-]?∞/gi, '\\int_{-\\infty}^{\\infty}');
     cleanFormula = cleanFormula.replace(/∫\s*(от\s*)?[₋-]?∞\s*до\s*([Xx])/gi, '\\int_{-\\infty}^{$1}');
     cleanFormula = cleanFormula.replace(/∫\s*(от\s*)?0\s*до\s*([Xx])/gi, '\\int_{0}^{$1}');
     
-    // Обработка паттерна M(X) = ∫ ... x * f(x) dx
-    // Заменяем "x * f(x)" на "x \\cdot f(x)"
+    // Обработка умножения
     cleanFormula = cleanFormula.replace(/([a-zA-Z0-9])\s*[·*×]\s*([a-zA-Z]\([^)]+\))/g, '$1 \\cdot $2');
-    
-    // Обработка "x f(x)" (без знака умножения) -> "x \\cdot f(x)"
-    cleanFormula = cleanFormula.replace(/([a-zA-Z0-9])\s+([a-zA-Z]\([^)]+\))/g, (match, p1, p2) => {
-      // Проверяем, что это не часть другого выражения
-      if (match.includes('=') || match.includes('∫')) {
-        return `${p1} \\cdot ${p2}`;
-      }
-      return match;
-    });
-    
-    // Обработка умножения: x * f(x) -> x \\cdot f(x)
     cleanFormula = cleanFormula.replace(/([a-zA-Z0-9])\s*[·*]\s*([a-zA-Z0-9(])/g, '$1 \\cdot $2');
     
-    // Если формула уже содержит LaTeX синтаксис, используем как есть
-    // Иначе оборачиваем в математический режим
+    // Оборачиваем в LaTeX
     if (!cleanFormula.includes('\\')) {
-      // Если нет LaTeX команд, возможно это простая формула
       cleanFormula = `$${cleanFormula}$`;
     } else {
-      // Если есть LaTeX команды, оборачиваем в display math
       cleanFormula = `$$${cleanFormula}$$`;
     }
     
-    const result = await mjAPI.typeset({
-      math: cleanFormula,
-      format: "TeX",
-      svg: true,
-      width: 100,
-      ex: 6,
-      em: 12,
-      linebreaks: false
+    // HTML страница с MathJax
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+        <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+        <script>
+          window.MathJax = {
+            tex: {
+              inlineMath: [['$', '$'], ['\\(', '\\)']],
+              displayMath: [['$$', '$$'], ['\\[', '\\]']]
+            },
+            svg: {
+              fontCache: 'global'
+            }
+          };
+        </script>
+        <style>
+          body {
+            margin: 0;
+            padding: 20px;
+            background: white;
+            font-family: Arial, sans-serif;
+          }
+          #formula {
+            font-size: 18px;
+            color: black;
+          }
+        </style>
+      </head>
+      <body>
+        <div id="formula">${cleanFormula}</div>
+        <script>
+          MathJax.typesetPromise().then(() => {
+            window.formulaReady = true;
+          });
+        </script>
+      </body>
+      </html>
+    `;
+    
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    
+    // Ждем пока MathJax отрендерит формулу
+    await page.waitForFunction(() => window.formulaReady === true, { timeout: 10000 });
+    await page.waitForTimeout(1000); // Дополнительная задержка для полного рендеринга
+    
+    // Получаем элемент с формулой
+    const formulaElement = await page.$('#formula');
+    if (!formulaElement) {
+      throw new Error('Элемент формулы не найден');
+    }
+    
+    // Делаем скриншот элемента
+    const imageName = `formula-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.png`;
+    const imagePath = path.join(__dirname, 'uploads', imageName);
+    
+    await formulaElement.screenshot({
+      path: imagePath,
+      type: 'png',
+      omitBackground: true
     });
     
-    if (result.errors && result.errors.length > 0) {
-      console.error('MathJax ошибка при рендеринге формулы:', result.errors);
-      console.error('Исходная формула:', formulaText);
-      console.error('Обработанная формула:', cleanFormula);
-      return null;
+    await page.close();
+    
+    // Оптимизируем изображение с помощью sharp
+    if (sharpAvailable && sharp && fs.existsSync(imagePath)) {
+      try {
+        await sharp(imagePath)
+          .trim({ threshold: 20 })
+          .png({ compressionLevel: 9 })
+          .toFile(imagePath + '.tmp');
+        
+        // Заменяем оригинал оптимизированной версией
+        fs.renameSync(imagePath + '.tmp', imagePath);
+      } catch (optimizeError) {
+        console.log(`⚠ Не удалось оптимизировать формулу: ${optimizeError.message}`);
+      }
     }
     
-    if (!result.svg) {
-      console.error('MathJax не вернул SVG для формулы:', formulaText);
-      return null;
-    }
-    
-    // Сохраняем SVG как файл
-    const imageName = `formula-${Date.now()}-${Math.random().toString(36).substr(2, 9)}.svg`;
-    const imagePath = path.join(__dirname, 'uploads', imageName);
-    fs.writeFileSync(imagePath, result.svg);
-    
-    console.log(`Формула конвертирована в изображение: ${imageName}`);
+    console.log(`✓ Формула конвертирована в PNG: ${imageName}`);
     return `/uploads/${imageName}`;
+    
   } catch (error) {
-    console.error('Ошибка конвертации формулы в изображение:', error);
-    console.error('Исходная формула:', formulaText);
+    console.error('✗ Ошибка конвертации формулы:', error.message);
+    console.error('  Исходная формула:', formulaText.substring(0, 100));
     return null;
+  }
+}
+
+// === ФУНКЦИЯ КОНВЕРТАЦИИ ИЗОБРАЖЕНИЙ В PNG ===
+async function convertImageToPng(buffer, contentType) {
+  const isWmfOrEmf = contentType.includes('wmf') || 
+                      contentType.includes('emf') || 
+                      contentType.includes('x-wmf') || 
+                      contentType.includes('x-emf') ||
+                      contentType.includes('ms-wmf');
+  
+  const timestamp = Date.now();
+  const randomStr = Math.random().toString(36).substr(2, 9);
+  
+  console.log(`📷 Обработка изображения: ${contentType}`);
+  
+  try {
+    // Для WMF/EMF - конвертируем в PNG используя системные инструменты
+    if (isWmfOrEmf) {
+      console.log(`🔄 WMF/EMF формат - конвертирую в PNG...`);
+      
+      // Сохраняем временный WMF файл
+      const tempWmfPath = path.join(__dirname, 'uploads', `temp-${timestamp}-${randomStr}.wmf`);
+      fs.writeFileSync(tempWmfPath, buffer);
+      
+      const pngName = `${timestamp}-${randomStr}.png`;
+      const pngPath = path.join(__dirname, 'uploads', pngName);
+      
+      // Пробуем конвертировать через ImageMagick
+      try {
+        await execAsync(`convert "${tempWmfPath}" -trim -background white -alpha remove "${pngPath}"`);
+        fs.unlinkSync(tempWmfPath); // Удаляем временный файл
+        
+        // Оптимизируем с помощью sharp
+        if (sharpAvailable && sharp && fs.existsSync(pngPath)) {
+          try {
+            await sharp(pngPath)
+              .trim({ threshold: 20 })
+              .resize(800, null, { fit: 'inside', withoutEnlargement: true })
+              .png({ compressionLevel: 9 })
+              .toFile(pngPath + '.tmp');
+            
+            fs.renameSync(pngPath + '.tmp', pngPath);
+            console.log(`✓ WMF конвертирован в PNG: ${pngName}`);
+            return { name: pngName, path: pngPath };
+          } catch (optimizeError) {
+            console.log(`⚠ Не удалось оптимизировать: ${optimizeError.message}`);
+            // Возвращаем то что есть
+            return { name: pngName, path: pngPath };
+          }
+        }
+        
+        console.log(`✓ WMF конвертирован в PNG: ${pngName}`);
+        return { name: pngName, path: pngPath };
+        
+      } catch (convertError) {
+        console.log(`⚠ ImageMagick не доступен, пробую GraphicsMagick...`);
+        
+        // Пробуем GraphicsMagick
+        try {
+          await execAsync(`gm convert "${tempWmfPath}" -trim "${pngPath}"`);
+          fs.unlinkSync(tempWmfPath);
+          
+          if (sharpAvailable && sharp && fs.existsSync(pngPath)) {
+            await sharp(pngPath)
+              .trim({ threshold: 20 })
+              .resize(800, null, { fit: 'inside' })
+              .png({ compressionLevel: 9 })
+              .toFile(pngPath + '.tmp');
+            
+            fs.renameSync(pngPath + '.tmp', pngPath);
+          }
+          
+          console.log(`✓ WMF конвертирован через GraphicsMagick: ${pngName}`);
+          return { name: pngName, path: pngPath };
+          
+        } catch (gmError) {
+          console.log(`⚠ GraphicsMagick не доступен, пробую LibreOffice...`);
+          
+          // Пробуем LibreOffice
+          try {
+            const tempDir = path.join(__dirname, 'uploads', `temp-${timestamp}`);
+            fs.mkdirSync(tempDir, { recursive: true });
+            
+            await execAsync(`libreoffice --headless --convert-to png --outdir "${tempDir}" "${tempWmfPath}"`);
+            fs.unlinkSync(tempWmfPath);
+            
+            // LibreOffice создает файл с другим именем
+            const convertedFiles = fs.readdirSync(tempDir).filter(f => f.endsWith('.png'));
+            if (convertedFiles.length > 0) {
+              const convertedPath = path.join(tempDir, convertedFiles[0]);
+              fs.renameSync(convertedPath, pngPath);
+              fs.rmdirSync(tempDir);
+              
+              if (sharpAvailable && sharp) {
+                await sharp(pngPath)
+                  .trim({ threshold: 20 })
+                  .resize(800, null, { fit: 'inside' })
+                  .png({ compressionLevel: 9 })
+                  .toFile(pngPath + '.tmp');
+                
+                fs.renameSync(pngPath + '.tmp', pngPath);
+              }
+              
+              console.log(`✓ WMF конвертирован через LibreOffice: ${pngName}`);
+              return { name: pngName, path: pngPath };
+            }
+            
+            fs.rmdirSync(tempDir);
+          } catch (loError) {
+            console.log(`⚠ LibreOffice не доступен: ${loError.message}`);
+          }
+          
+          // Если ничего не сработало - удаляем временный файл и создаем простой PNG
+          if (fs.existsSync(tempWmfPath)) {
+            fs.unlinkSync(tempWmfPath);
+          }
+          
+          // Создаем простой белый PNG (без текста placeholder)
+          if (sharpAvailable && sharp) {
+            const whitePng = await sharp({
+              create: {
+                width: 200,
+                height: 60,
+                channels: 3,
+                background: { r: 255, g: 255, b: 255 }
+              }
+            })
+            .png()
+            .toFile(pngPath);
+            
+            console.log(`⚠ Создан пустой PNG (WMF не удалось конвертировать): ${pngName}`);
+            return { name: pngName, path: pngPath };
+          }
+        }
+      }
+    }
+    
+    // Для обычных изображений (PNG, JPG, GIF и т.д.)
+    if (sharpAvailable && sharp) {
+      const pngName = `${timestamp}-${randomStr}.png`;
+      const pngPath = path.join(__dirname, 'uploads', pngName);
+      
+      try {
+        let sharpInstance = sharp(buffer);
+        const metadata = await sharpInstance.metadata();
+        
+        console.log(`   Размер: ${metadata.width}x${metadata.height}, формат: ${metadata.format}`);
+        
+        // Уменьшаем если больше 600px по ширине
+        if (metadata.width && metadata.width > 600) {
+          sharpInstance = sharpInstance.resize(600, null, { 
+            fit: 'inside',
+            withoutEnlargement: true 
+          });
+          console.log(`   Изменен размер до 600px по ширине`);
+        }
+        
+        // Пробуем обрезать края, но с обработкой ошибок
+        try {
+          sharpInstance = sharpInstance.trim({ threshold: 20 });
+        } catch (trimError) {
+          console.log(`   ⚠ Trim не удался, пропускаем: ${trimError.message}`);
+          // Создаем новый instance без trim
+          sharpInstance = sharp(buffer);
+          if (metadata.width && metadata.width > 600) {
+            sharpInstance = sharpInstance.resize(600, null, { fit: 'inside' });
+          }
+        }
+        
+        // Конвертируем в PNG
+        await sharpInstance
+          .png({ compressionLevel: 6 })
+          .toFile(pngPath);
+        
+        // Проверяем что файл создан
+        if (fs.existsSync(pngPath)) {
+          const stats = fs.statSync(pngPath);
+          console.log(`✓ PNG создан: ${pngName} (${Math.round(stats.size / 1024)}KB)`);
+          return { name: pngName, path: pngPath };
+        } else {
+          throw new Error('Файл не был создан');
+        }
+        
+      } catch (sharpError) {
+        console.log(`⚠ Sharp ошибка: ${sharpError.message}`);
+        
+        // Fallback: сохраняем оригинал
+        const ext = contentType.split('/')[1] || 'png';
+        const originalName = `${timestamp}-${randomStr}.${ext}`;
+        const originalPath = path.join(__dirname, 'uploads', originalName);
+        fs.writeFileSync(originalPath, buffer);
+        console.log(`⚠ Сохранен оригинал: ${originalName}`);
+        return { name: originalName, path: originalPath };
+      }
+    }
+    
+    // Без sharp - просто сохраняем оригинал
+    const ext = contentType.split('/')[1] || 'png';
+    const originalName = `${timestamp}-${randomStr}.${ext}`;
+    const originalPath = path.join(__dirname, 'uploads', originalName);
+    fs.writeFileSync(originalPath, buffer);
+    console.log(`⚠ Sharp недоступен, сохранен оригинал: ${originalName}`);
+    return { name: originalName, path: originalPath };
+    
+  } catch (error) {
+    console.error(`✗ Критическая ошибка обработки изображения: ${error.message}`);
+    
+    // Последний fallback - сохраняем как есть
+    const ext = contentType.split('/')[1] || 'bin';
+    const fallbackName = `${timestamp}-${randomStr}-fallback.${ext}`;
+    const fallbackPath = path.join(__dirname, 'uploads', fallbackName);
+    
+    try {
+      fs.writeFileSync(fallbackPath, buffer);
+      console.log(`⚠ Fallback: сохранен оригинальный буфер: ${fallbackName}`);
+      return { name: fallbackName, path: fallbackPath };
+    } catch (writeError) {
+      console.error(`✗ Не удалось сохранить файл: ${writeError.message}`);
+      // Возвращаем пустое имя - изображение будет пропущено
+      return { name: 'error.png', path: '' };
+    }
   }
 }
 
@@ -243,11 +566,11 @@ async function parseDocxFile(filePath, subjectId) {
     const result = await mammoth.convertToHtml({ path: filePath }, {
       convertImage: mammoth.images.imgElement(async (image) => {
         const buffer = await image.read();
-        const extension = image.contentType.split('/')[1] || 'png';
-        const imageName = `${Date.now()}-${Math.random().toString(36).substr(2, 9)}.${extension}`;
-        const imagePath = path.join(__dirname, 'uploads', imageName);
-        fs.writeFileSync(imagePath, buffer);
-        return { src: `/uploads/${imageName}` };
+        const contentType = image.contentType || 'image/png';
+        
+        // Конвертируем изображение в PNG
+        const converted = await convertImageToPng(buffer, contentType);
+        return { src: `/uploads/${converted.name}` };
       })
     });
 
@@ -289,52 +612,64 @@ async function parseDocxFile(filePath, subjectId) {
       
       const variants = [];
       for (let j = 1; j < parts.length; j++) {
-        let variantText = parts[j].trim();
-        // Убираем HTML теги из варианта
-        variantText = variantText.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+        let variantHtml = parts[j].trim();
         
-        // Убираем точки в конце, если есть
-        variantText = variantText.replace(/\.+$/, '');
+        // Проверяем наличие изображений в варианте
+        const hasImage = /<img[^>]*>/i.test(variantHtml);
         
-        if (variantText && variantText.length > 0) {
-          // Проверяем наличие сложных формул
-          if (hasComplexFormula(variantText) && mathjaxAvailable) {
-            console.log(`Вариант ${j} содержит формулу, конвертируем в изображение: ${variantText.substring(0, 50)}...`);
-            try {
-              const formulaImagePath = await convertFormulaToImage(variantText);
-              if (formulaImagePath) {
-                // Сохраняем как HTML с изображением
-                variants.push({
-                  text: `<img src="${formulaImagePath}" alt="${variantText.replace(/"/g, '&quot;')}" style="max-width: 100%; height: auto;" />`,
-                  isCorrect: j === 1 // Первый вариант - правильный
-                });
-              } else {
-                // Если не удалось конвертировать, сохраняем как текст
-                console.log(`Не удалось конвертировать формулу в варианте ${j}, сохраняем как текст`);
-                variants.push({
-                  text: variantText,
-                  isCorrect: j === 1
-                });
-              }
-            } catch (error) {
-              console.error(`Ошибка при конвертации формулы в варианте ${j}:`, error);
-              // В случае ошибки сохраняем как обычный текст
-              variants.push({
-                text: variantText,
-                isCorrect: j === 1
-              });
-            }
-          } else {
-            // Обычный текст без формул (или MathJax недоступен)
-            if (hasComplexFormula(variantText) && !mathjaxAvailable) {
-              console.log(`Вариант ${j} содержит формулу, но MathJax недоступен. Сохраняем как текст.`);
-            }
+        // Текст варианта без HTML тегов (для проверки формул и сохранения)
+        let variantText = variantHtml
+          .replace(/<img[^>]*>/gi, '[изображение]') // Временно заменяем картинки
+          .replace(/<[^>]*>/g, '') // Убираем остальные теги
+          .replace(/\s+/g, ' ')
+          .trim();
+        
+        // Убираем точки в конце
+        variantText = variantText.replace(/\.+$/, '').trim();
+        
+        // Если есть изображение в варианте, сохраняем HTML с изображением
+        if (hasImage) {
+          // Извлекаем src изображения
+          const imgMatch = variantHtml.match(/<img[^>]*src=["']([^"']+)["'][^>]*>/i);
+          if (imgMatch) {
+            const imgSrc = imgMatch[1];
+            // Получаем текст без изображения
+            const textWithoutImage = variantText.replace('[изображение]', '').trim();
+            
+            // Формируем финальный HTML: текст + изображение (или только изображение)
+            const finalHtml = textWithoutImage && textWithoutImage.length > 0
+              ? `${textWithoutImage} <img src="${imgSrc}" style="max-height: 200px; width: auto; vertical-align: middle;" />`
+              : `<img src="${imgSrc}" style="max-height: 200px; width: auto;" />`;
+            
             variants.push({
-              text: variantText,
+              text: finalHtml,
               isCorrect: j === 1 // Первый вариант - правильный
             });
+            continue;
           }
         }
+        
+        // Пропускаем только полностью пустые варианты (без текста и без изображений)
+        if (!variantText || variantText.length === 0) {
+          continue;
+        }
+        
+        // Сохраняем вариант как есть (формулы уже должны быть как изображения в документе)
+        variants.push({
+          text: variantText,
+          isCorrect: j === 1 // Первый вариант - правильный
+        });
+      }
+      
+      // Проверяем что получили минимум 2 варианта (но лучше 5)
+      if (variants.length < 2) {
+        console.log(`Блок ${i + 1}: пропущен (мало вариантов: ${variants.length}, ожидается минимум 2)`);
+        continue;
+      }
+      
+      // Логируем количество вариантов для диагностики
+      if (variants.length < 5) {
+        console.log(`⚠ Блок ${i + 1}: только ${variants.length} вариантов (ожидается 5)`);
       }
       
       if (variants.length < 2) {
@@ -587,6 +922,33 @@ app.put('/api/questions/:id', async (req, res) => {
 
 // Подключение к MongoDB и запуск сервера
 const PORT = process.env.PORT || 5000;
+
+// Закрытие браузера при завершении сервера
+process.on('SIGINT', async () => {
+  console.log('\n⚠ Получен сигнал SIGINT, закрываю браузер...');
+  if (browserInstance) {
+    try {
+      await browserInstance.close();
+      console.log('✓ Браузер закрыт');
+    } catch (error) {
+      console.error('✗ Ошибка закрытия браузера:', error.message);
+    }
+  }
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n⚠ Получен сигнал SIGTERM, закрываю браузер...');
+  if (browserInstance) {
+    try {
+      await browserInstance.close();
+      console.log('✓ Браузер закрыт');
+    } catch (error) {
+      console.error('✗ Ошибка закрытия браузера:', error.message);
+    }
+  }
+  process.exit(0);
+});
 
 mongoose.connect(process.env.MONGODB_URI)
   .then(() => {
