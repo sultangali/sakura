@@ -143,12 +143,18 @@ if [ ! -f "$CLIENT_DIR/.env.production" ]; then
 # Production режим - облачный сервер
 VITE_SERVER_IP=$DOMAIN
 VITE_LOCAL_PORT=5000
+# Принудительно использовать облачный режим
+VITE_FORCE_CLOUD=true
 EOF
     info "Настроен .env.production для клиента с адресом: $DOMAIN"
 else
     info ".env.production файл клиента уже существует"
     # Обновляем IP в существующем файле
     sed -i "s|VITE_SERVER_IP=.*|VITE_SERVER_IP=$DOMAIN|g" "$CLIENT_DIR/.env.production" 2>/dev/null || echo "VITE_SERVER_IP=$DOMAIN" >> "$CLIENT_DIR/.env.production"
+    # Убеждаемся, что FORCE_CLOUD установлен
+    if ! grep -q "VITE_FORCE_CLOUD" "$CLIENT_DIR/.env.production"; then
+        echo "VITE_FORCE_CLOUD=true" >> "$CLIENT_DIR/.env.production"
+    fi
 fi
 
 # Клиент .env.local (для локальной разработки)
