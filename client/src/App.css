@@ -508,19 +508,6 @@
   line-height: 1.6;
 }
 
-/* Ограничение размера изображений в вопросах и ответах */
-.question-text img,
-.answer-option img {
-  max-width: 100%;
-  max-height: 200px;
-  width: auto;
-  height: auto;
-  object-fit: contain;
-  display: inline-block;
-  vertical-align: middle;
-  margin: 4px 0;
-}
-
 /* Скрытый инпут для поиска */
 .question-search-input {
   

@@ -32,12 +32,9 @@ function StudentModal({ onComplete }) {
     }
   };
 
-  const fetchSubjects = async (groupId = null) => {
+  const fetchSubjects = async () => {
     try {
-      const url = groupId 
-        ? `${API_URL}/subjects?groupId=${groupId}`
-        : `${API_URL}/subjects`;
-      const res = await fetch(url);
+      const res = await fetch(`${API_URL}/subjects`);
       const data = await res.json();
       setSubjects(data);
     } catch (err) {
@@ -58,8 +55,6 @@ function StudentModal({ onComplete }) {
   const handleGroupSelect = async (group) => {
     setSelectedGroup(group);
     await fetchStudents(group._id);
-    // Загружаем предметы, доступные для выбранной группы
-    await fetchSubjects(group._id);
     setStep(2);
   };
 

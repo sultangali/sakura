@@ -246,20 +246,17 @@ function AdminPanel({ onBack }) {
         body: formData
       });
       const data = await res.json();
-      if (res.ok && data.success) {
+      if (data.success) {
         setMessage(data.message || `Обработано ${data.count} вопросов: создано ${data.created || 0}, обновлено ${data.updated || 0}`);
         // Обновить список вопросов, если открыта вкладка
         if (activeTab === 'questions') {
           fetchAllQuestions();
         }
       } else {
-        // Показываем детальное сообщение об ошибке
-        const errorMsg = data.error || 'Ошибка загрузки';
-        const details = data.details ? `\n${data.details}` : '';
-        setMessage(`${errorMsg}${details}`);
+        setMessage(data.error || 'Ошибка загрузки');
       }
     } catch (error) {
-      setMessage(`Ошибка загрузки файла: ${error.message}`);
+      setMessage('Ошибка загрузки файла');
     }
     setLoading(false);
     e.target.value = '';
@@ -551,13 +548,10 @@ function AdminPanel({ onBack }) {
               </select>
               <input 
                 type="file" 
-                accept=".docx,.doc,.txt"
+                accept=".docx"
                 onChange={handleFileUpload}
                 disabled={loading || !selectedSubjectForUpload}
               />
-              <small style={{ color: '#6b7280', fontSize: '12px', marginTop: '4px', display: 'block' }}>
-                Поддерживаемые форматы: DOCX, DOC, TXT
-              </small>
             </div>
             {loading && <p>Загрузка и парсинг файла...</p>}
           </div>
