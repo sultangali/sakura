@@ -43,6 +43,11 @@ DOMAIN="${DOMAIN:-34.88.233.59}"  # IP адрес сервера (можно п�
 SERVER_PORT="${SERVER_PORT:-5000}"
 CLIENT_PORT="${CLIENT_PORT:-5173}"
 
+# Директории для production развертывания
+WWW_DIR="/var/www/platonus"
+WWW_CLIENT_DIR="$WWW_DIR/client"
+WWW_SERVER_DIR="$WWW_DIR/server"
+
 info "Проект: $PROJECT_DIR"
 info "Домен: $DOMAIN"
 info "Порт сервера: $SERVER_PORT"
@@ -158,31 +163,89 @@ EOF
 fi
 
 # ============================================
-# 4. Сборка клиента
+# 4. Создание директорий для production
 # ============================================
-info "Шаг 4: Сборка клиента для production..."
+info "Шаг 4: Создание директорий для production..."
+
+# Создаем директории в /var/www
+mkdir -p "$WWW_DIR"
+mkdir -p "$WWW_CLIENT_DIR"
+mkdir -p "$WWW_SERVER_DIR"
+mkdir -p "$WWW_SERVER_DIR/uploads"
+
+# Устанавливаем права доступа
+chown -R $SUDO_USER:$SUDO_USER "$WWW_DIR" 2>/dev/null || true
+chmod -R 755 "$WWW_DIR"
+
+info "Директории созданы: $WWW_DIR"
+
+# ============================================
+# 5. Копирование сервера
+# ============================================
+info "Шаг 5: Копирование сервера в /var/www..."
+
+# Копируем файлы сервера (исключая node_modules и .git)
+rsync -av --exclude='node_modules' --exclude='.git' --exclude='uploads/*' "$SERVER_DIR/" "$WWW_SERVER_DIR/" || {
+    # Fallback на cp если rsync не доступен
+    cp -r "$SERVER_DIR"/* "$WWW_SERVER_DIR/" 2>/dev/null || true
+    rm -rf "$WWW_SERVER_DIR/node_modules" 2>/dev/null || true
+    rm -rf "$WWW_SERVER_DIR/.git" 2>/dev/null || true
+}
+
+# Устанавливаем права на uploads
+chmod -R 755 "$WWW_SERVER_DIR/uploads"
+
+info "Сервер скопирован в $WWW_SERVER_DIR"
+
+# ============================================
+# 6. Сборка и копирование клиента
+# ============================================
+info "Шаг 6: Сборка клиента для production..."
 
 cd "$CLIENT_DIR"
+
+# Устанавливаем production переменные
+if [ -f ".env.production" ]; then
+    export $(cat .env.production | grep -v '^#' | xargs)
+fi
+
 npm run build || {
     error "Ошибка сборки клиента"
     exit 1
 }
+
+# Копируем собранный клиент в /var/www
+if [ -d "dist" ]; then
+    cp -r dist/* "$WWW_CLIENT_DIR/" || {
+        error "Ошибка копирования клиента"
+        exit 1
+    }
+    info "Клиент собран и скопирован в $WWW_CLIENT_DIR"
+else
+    error "Директория dist не найдена после сборки"
+    exit 1
+fi
+
 cd "$PROJECT_DIR"
 
-info "Клиент успешно собран"
-
 # ============================================
-# 5. Настройка PM2
+# 7. Настройка PM2
 # ============================================
-info "Шаг 5: Настройка PM2 для сервера..."
+info "Шаг 7: Настройка PM2 для сервера..."
 
-cd "$SERVER_DIR"
+cd "$WWW_SERVER_DIR"
+
+# Устанавливаем зависимости в production директории
+if [ ! -d "node_modules" ]; then
+    info "Устанавливаю зависимости сервера в production..."
+    npm install --production
+fi
 
 # Останавливаем существующий процесс если есть
 pm2 delete platonus-server 2>/dev/null || true
 
-# Запускаем сервер через PM2
-pm2 start index.js --name platonus-server --env production || {
+# Запускаем сервер через PM2 из production директории
+pm2 start index.js --name platonus-server --cwd "$WWW_SERVER_DIR" --env production || {
     error "Ошибка запуска сервера через PM2"
     exit 1
 }
@@ -195,23 +258,35 @@ pm2 startup systemd -u $SUDO_USER --hp /home/$SUDO_USER || warn "Не удало
 
 cd "$PROJECT_DIR"
 
-info "Сервер запущен через PM2"
+info "Сервер запущен через PM2 из $WWW_SERVER_DIR"
 
 # ============================================
-# 6. Настройка Nginx
+# 8. Настройка Nginx
 # ============================================
-info "Шаг 6: Настройка Nginx..."
+info "Шаг 8: Настройка Nginx..."
 
 NGINX_CONFIG="/etc/nginx/sites-available/platonus"
 NGINX_ENABLED="/etc/nginx/sites-enabled/platonus"
 
-# Создаем конфигурацию Nginx
-cat > "$NGINX_CONFIG" << EOF
+# Копируем конфигурацию из проекта или создаем новую
+if [ -f "$PROJECT_DIR/nginx-platonus.conf" ]; then
+    info "Использую конфигурацию из проекта..."
+    cp "$PROJECT_DIR/nginx-platonus.conf" "$NGINX_CONFIG"
+    
+    # Заменяем переменные в конфигурации
+    sed -i "s|/var/www/platonus|$WWW_DIR|g" "$NGINX_CONFIG"
+    sed -i "s|localhost:5000|localhost:$SERVER_PORT|g" "$NGINX_CONFIG"
+    sed -i "s|34.88.233.59|$DOMAIN|g" "$NGINX_CONFIG"
+else
+    # Создаем конфигурацию Nginx
+    info "Создаю новую конфигурацию Nginx..."
+    cat > "$NGINX_CONFIG" << EOF
 # Platonus Test System Nginx Configuration
 
 # Upstream для API сервера
 upstream platonus_api {
     server localhost:$SERVER_PORT;
+    keepalive 64;
 }
 
 server {
@@ -224,10 +299,16 @@ server {
 
     # Максимальный размер загружаемых файлов (50MB)
     client_max_body_size 50M;
+    
+    # Таймауты для больших файлов
+    proxy_connect_timeout 300s;
+    proxy_send_timeout 300s;
+    proxy_read_timeout 300s;
+    send_timeout 300s;
 
     # Статические файлы клиента
     location / {
-        root $CLIENT_DIR/dist;
+        root $WWW_CLIENT_DIR;
         try_files \$uri \$uri/ /index.html;
         index index.html;
         
@@ -235,6 +316,13 @@ server {
         location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
             expires 1y;
             add_header Cache-Control "public, immutable";
+            access_log off;
+        }
+        
+        # Без кеширования для HTML
+        location ~* \.(html)$ {
+            expires -1;
+            add_header Cache-Control "no-cache, no-store, must-revalidate";
         }
     }
 
@@ -250,25 +338,31 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_cache_bypass \$http_upgrade;
         
-        # Таймауты для загрузки файлов
-        proxy_connect_timeout 300s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
+        # Увеличиваем буферы для больших запросов
+        proxy_buffering off;
+        proxy_request_buffering off;
     }
 
     # Загруженные файлы (изображения)
     location /uploads {
-        alias $SERVER_DIR/uploads;
+        alias $WWW_SERVER_DIR/uploads;
         expires 1y;
         add_header Cache-Control "public";
+        add_header Access-Control-Allow-Origin *;
         
         # Разрешаем доступ к файлам
-        location ~* \.(png|jpg|jpeg|gif|svg|pdf)$ {
+        location ~* \.(png|jpg|jpeg|gif|svg|pdf|wmf|emf)$ {
             add_header Access-Control-Allow-Origin *;
         }
     }
+
+    # Безопасность заголовков
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
 }
 EOF
+fi
 
 # Активируем конфигурацию
 ln -sf "$NGINX_CONFIG" "$NGINX_ENABLED"
@@ -288,9 +382,9 @@ systemctl reload nginx || systemctl restart nginx
 info "Nginx настроен и перезагружен"
 
 # ============================================
-# 7. Проверка MongoDB
+# 9. Проверка MongoDB
 # ============================================
-info "Шаг 7: Проверка MongoDB..."
+info "Шаг 9: Проверка MongoDB..."
 
 if ! systemctl is-active --quiet mongod 2>/dev/null && ! systemctl is-active --quiet mongodb 2>/dev/null; then
     warn "MongoDB не запущен. Пытаюсь запустить..."
@@ -304,9 +398,9 @@ else
 fi
 
 # ============================================
-# 8. Финальная проверка
+# 10. Финальная проверка
 # ============================================
-info "Шаг 8: Финальная проверка..."
+info "Шаг 10: Финальная проверка..."
 
 sleep 2
 
@@ -381,5 +475,14 @@ echo ""
 info "Для локальной разработки:"
 echo "  cd client && npm run dev     - Запустить клиент локально"
 echo "  cd server && npm run dev     - Запустить сервер локально"
+echo ""
+info "Директории production:"
+echo "  Клиент: $WWW_CLIENT_DIR"
+echo "  Сервер: $WWW_SERVER_DIR"
+echo ""
+info "Для повторного развертывания просто запустите скрипт снова:"
+echo "  sudo ./deploy.sh"
+echo ""
+info "Конфигурация Nginx сохранена в: $NGINX_CONFIG"
 echo ""
 
