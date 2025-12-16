@@ -197,3 +197,4 @@ pm2 logs platonus-server
 - Проверьте логи сервера: `pm2 logs platonus-server`
 - Убедитесь, что DNS записи настроены правильно в Namecheap
 
+

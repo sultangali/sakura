@@ -280,3 +280,4 @@ echo "  sudo systemctl status nginx  - Статус Nginx"
 echo "  sudo tail -f /var/log/nginx/platonus_error.log - Логи ошибок"
 echo ""
 
+

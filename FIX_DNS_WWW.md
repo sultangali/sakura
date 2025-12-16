@@ -194,3 +194,4 @@ echo "www.oxxooy.online: $(dig +short www.oxxooy.online)"
 
 Оба должны вернуть: `34.88.233.59`
 
+
