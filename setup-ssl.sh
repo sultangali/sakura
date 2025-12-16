@@ -86,16 +86,42 @@ if ! grep -q "server_name.*$DOMAIN" "$NGINX_CONFIG"; then
     nginx -t && systemctl reload nginx
 fi
 
+# Проверка DNS для www поддомена
+info "Проверка DNS записей..."
+MAIN_DOMAIN_IP=$(dig +short "$DOMAIN" | head -n 1)
+WWW_DOMAIN_IP=$(dig +short "www.$DOMAIN" | head -n 1)
+
+USE_WWW=false
+if [ -n "$WWW_DOMAIN_IP" ] && [ "$WWW_DOMAIN_IP" = "$MAIN_DOMAIN_IP" ]; then
+    info "✓ DNS записи для www.$DOMAIN найдены"
+    USE_WWW=true
+else
+    warn "⚠ DNS запись для www.$DOMAIN не найдена или не совпадает"
+    warn "Буду получать сертификат только для $DOMAIN"
+    warn "После настройки DNS для www можно добавить его командой:"
+    warn "  sudo certbot --nginx -d $DOMAIN -d www.$DOMAIN --expand"
+fi
+
 # Получение SSL сертификата
 info "Шаг 3: Получение SSL сертификата от Let's Encrypt..."
 info "Это может занять несколько минут..."
 
-certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN" --non-interactive --agree-tos --email "admin@$DOMAIN" --redirect
+if [ "$USE_WWW" = true ]; then
+    certbot --nginx -d "$DOMAIN" -d "www.$DOMAIN" --non-interactive --agree-tos --email "admin@$DOMAIN" --redirect
+else
+    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email "admin@$DOMAIN" --redirect
+fi
 
 if [ $? -eq 0 ]; then
     info "✓ SSL сертификат успешно получен и настроен!"
+    if [ "$USE_WWW" = false ]; then
+        warn "⚠ Сертификат получен только для $DOMAIN"
+        warn "После настройки DNS для www.$DOMAIN выполните:"
+        warn "  sudo certbot --nginx -d $DOMAIN -d www.$DOMAIN --expand"
+    fi
 else
     error "✗ Ошибка при получении SSL сертификата"
+    error "Проверьте DNS записи и доступность домена из интернета"
     exit 1
 fi
 
