@@ -76,3 +76,5 @@ sudo apt-get install -y imagemagick
 
 Он лучше всего справляется с конвертацией WMF/EMF в PNG.
 
+
+

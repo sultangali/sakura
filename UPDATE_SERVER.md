@@ -107,3 +107,5 @@ npm install  # Установит sharp и jimp
 npm run dev
 ```
 
+
+

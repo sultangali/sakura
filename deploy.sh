@@ -39,7 +39,8 @@ fi
 PROJECT_DIR=$(pwd)
 SERVER_DIR="$PROJECT_DIR/server"
 CLIENT_DIR="$PROJECT_DIR/client"
-DOMAIN="${DOMAIN:-34.88.233.59}"  # IP адрес сервера (можно переопределить через переменную окружения)
+DOMAIN="${DOMAIN:-oxxooy.online}"  # Домен или IP адрес сервера (можно переопределить через переменную окружения)
+SERVER_IP="${SERVER_IP:-34.88.233.59}"  # IP адрес сервера для DNS записей
 SERVER_PORT="${SERVER_PORT:-5000}"
 CLIENT_PORT="${CLIENT_PORT:-5173}"
 
@@ -285,7 +286,10 @@ if [ -f "$PROJECT_DIR/nginx-platonus.conf" ]; then
     # Заменяем переменные в конфигурации
     sed -i "s|/var/www/platonus|$WWW_DIR|g" "$NGINX_CONFIG"
     sed -i "s|localhost:5000|localhost:$SERVER_PORT|g" "$NGINX_CONFIG"
-    sed -i "s|34.88.233.59|$DOMAIN|g" "$NGINX_CONFIG"
+    # Обновляем server_name для поддержки домена и IP
+    if ! grep -q "server_name.*$DOMAIN" "$NGINX_CONFIG"; then
+        sed -i "s|server_name.*|server_name $DOMAIN www.$DOMAIN $SERVER_IP _;|g" "$NGINX_CONFIG"
+    fi
 else
     # Создаем конфигурацию Nginx
     info "Создаю новую конфигурацию Nginx..."
@@ -300,7 +304,7 @@ upstream platonus_api {
 
 server {
     listen 80;
-    server_name $DOMAIN _;
+    server_name $DOMAIN www.$DOMAIN $SERVER_IP _;
 
     # Логи
     access_log /var/log/nginx/platonus_access.log;
@@ -451,7 +455,8 @@ echo "=========================================="
 echo ""
 info "🌐 Сервер API: http://$DOMAIN/api"
 info "🌐 Клиент (Production): http://$DOMAIN"
-info "📡 IP адрес: $DOMAIN"
+info "📡 Домен: $DOMAIN"
+info "📡 IP адрес сервера: $SERVER_IP"
 info "📊 Статус PM2: pm2 status"
 info "Логи сервера: pm2 logs platonus-server"
 info "Логи Nginx: tail -f /var/log/nginx/platonus_*.log"

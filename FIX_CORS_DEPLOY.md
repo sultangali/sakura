@@ -144,3 +144,5 @@ head -20 /var/www/platonus/client/index.html
 - **В production используйте относительные пути** (`/api`), а не абсолютные (`http://...`)
 - **Nginx проксирует** `/api` на `localhost:5000`, поэтому сервер должен быть запущен
 
+
+

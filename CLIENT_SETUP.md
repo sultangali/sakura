@@ -97,3 +97,5 @@ npm run dev
 - При изменении `.env.local` перезапустите Vite
 - Для production используйте `.env.production` (настраивается через `deploy.sh`)
 
+
+

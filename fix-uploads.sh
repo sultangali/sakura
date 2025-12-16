@@ -140,3 +140,5 @@ echo "  tail -f /var/log/nginx/platonus_error.log  - Логи ошибок"
 echo "  curl -I http://localhost/uploads/имя_файла.png  - Тест доступа"
 echo ""
 
+
+
